@@ -1,0 +1,110 @@
+in this scenario I want to give required accesses and certificates to a user who want to have control over api-kubernetes server from another PC.
+1- we have to determine our user 
+2- create user.key 
+3- create user.csr
+4- create user.crt
+5- approve certificate in kuber
+6- apply cluster-role and cluster-rolebinding
+7- copy user.key user.crt ca.crt from kuber-server to client-pc
+7- install kubectl on client-pc
+8- config kubeconfig file
+
+
+in this scenario user is root in client-pc:
+
+openssl genrsa -out root.key 2048 --> root.key
+openssl req -new -key root.key -out root.csr --> root.csr 
+cat root.csr | base64 -w 0 --> ***
+
+4- ----------------------------------- req.yaml ----------------------------------------------------------
+apiVersion: certificates.k8s.io/v1
+kind: CertificateSigningRequest
+metadata:
+  name: root-csr
+spec:
+  request: "LS0tLScnFkdGFndElZClZkS0FUbzQ9Ci0tLS0tRU5EIENFUlRJRklDQVRFIFJFUVVFU1QtLS0tLQo="
+  signerName: kubernetes.io/kube-apiserver-client
+  usages:
+  - client auth
+----------------------------------------------------------------------------------------------------
+
+5- now approve certificate:
+
+kubectl get certificate
+kubectl certificate approve <CERT-NAME>
+-------------------------------------------------------------------------
+
+6- apply cluster-role and cluster-rolebinding
+
+--------------- Cluster role --------------------------------
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: get-nodes
+rules:
+- apiGroups: [""]
+  resources: ["nodes"]
+  verbs: ["get", "list"]
+
+------------------ cluster role binding -----------------------
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: get-nodes-root
+subjects:
+- kind: User
+  name: root
+  apiGroup: rbac.authorization.k8s.io
+roleRef:
+  kind: ClusterRole
+  name: get-nodes
+  apiGroup: rbac.authorization.k8s.io
+
+-----------------------------------------------------------------------
+
+scp root.key root.crt ca.crt root@<CLIENT-PC>
+
+/root/root.crt
+/root/root.key
+/root/ca.crt
+
+-----------------------------------------------------------------------
+
+Now in Client-PC:
+
+apt install kubectl:
+
+curl -fsSL https://pkgs.k8s.io/core:/stable:/v1.30/deb/Release.key | sudo gpg --dearmor -o /etc/apt/keyrings/kubernetes-apt-keyring.gpg
+
+echo 'deb [signed-by=/etc/apt/keyrings/kubernetes-apt-keyring.gpg] https://pkgs.k8s.io/core:/stable:/v1.30/deb/ /' | sudo tee /etc/apt/sources.list.d/kubernetes.list
+
+sudo apt-get update
+sudo apt-get install -y kubectl
+
+
+now config the kubeconfig file:
+------------------------- kubeconfig ------------------------------------
+apiVersion: v1
+kind: Config
+clusters:
+- cluster:
+    certificate-authority: /root/ca.crt
+    server: https://<API-SERVER-IP>:6443
+  name: kubernetes
+contexts:
+- context:
+    cluster: kubernetes
+    user: root
+    namespace: default
+  name: root-context
+current-context: root-context
+users:
+- name: root
+  user:
+    client-certificate: /root/root.crt
+    client-key: /root/root.key
+------------------------------------------------------------------------
+
+export KUBECONFIG=/root/kubeconfig
+kubectl config use-context root-context
+kubectl get nodes
